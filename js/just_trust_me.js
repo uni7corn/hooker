@@ -128,7 +128,7 @@ Java.perform(function() {
     var DefaultHttpClientClassRapeConstructor = DefaultHttpClientClass.$init.overload('org.apache.http.conn.ClientConnectionManager', 'org.apache.http.params.HttpParams');
     DefaultHttpClientClassRapeConstructor.implementation = function(v0, v1) {
         //被强奸的构造方法被调用的话，我们替换调ClientConnectionManager参数为我们的
-        var returnObj = DefaultHttpClientClassRapeConstructor.call(this, Helper.getSCCM(), v1);
+        var returnObj = DefaultHttpClientClassRapeConstructor.call(this, Helper.getCCM(v0, v1), v1);
         console.log("org.apache.http.impl.client.DefaultHttpClient.$init('org.apache.http.conn.ClientConnectionManager', 'org.apache.http.params.HttpParams') was hooked!");
         return returnObj;
     };
