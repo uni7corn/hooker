@@ -87,9 +87,9 @@ function printBeat(beat) {
 	console.log(str);
 };
 
-function log(str) {
-    console.log(str);
-};
+var log = console.log;
+
+var print = console.log;
 
 function getBaseContext() {
     var currentApplication = Java.use('android.app.ActivityThread').currentApplication();

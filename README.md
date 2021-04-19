@@ -5,8 +5,8 @@ hooker是一个基于frida实现的逆向工具包。为逆向开发人员提供
 文档持续更新中.....
 =================
 
-[点击此处快速定位到hooker自动化生成frida脚本文档](#j---生成指定类的hook脚本)
-=================
+# 快速定位
+##### [自动化生成frida hook脚本](#j---生成指定类的hook脚本)
 
 目录
 =================
@@ -73,8 +73,11 @@ hooker是一个基于frida实现的逆向工具包。为逆向开发人员提供
         * [9. hover(x,y,upStepLength)](#1-startactivityactivityname)
         * [10. viewTree()](#1-startactivityactivityname)
     * [远程frida支持](#远程frida支持)
+* [更新教程](#更新教程)
+    * [1. clone最新项目](#1-clone最新项目)
+    * [2. 方式一覆盖核心文件到你的hooker](#2-方式一覆盖核心文件到你的hooker)
+    * [3. 方式二覆盖你的应用工作目录到最新hooker](#3-方式二覆盖你的应用工作目录到最新hooker)
 
-	
 # hooker和frida、objection有什么不同
 - 职责不同：frida注重打造调试引擎、objection注重将frida的api简单封装一下让你好快速上手frida。而hooker是重新站在一个安卓应用开发和安卓逆向工程师的角度去打造的更加专业Android逆向工作台，重新定义了逆向android的工作方式。
 - 封装不同：frida是基于gumjs（V8）、C/C++封装的调试引擎，用于动态Hook跟踪、拦截和主动调用函数等。hooker是基于frida作为引擎和自己打造的Dex库（radar）调用Android Framework层代码完成的。
@@ -88,9 +91,9 @@ hooker是一个基于frida实现的逆向工具包。为逆向开发人员提供
 
 ### 1. git clone项目
 ```shell
-stephen@ubuntu:~/hooker$ git https://github.com/CreditTone/hooker.git
-stephen@ubuntu:~/hooker$ cd hooker
-stephen@ubuntu:~/hooker$ ls
+stephen@ubuntu:~$ git https://github.com/CreditTone/hooker.git
+stephen@ubuntu:~$ cd hooker
+stephen@ubuntu:~$ ls
 colorful.py                 com.mokee.aegis              mobile-deploy.tar
 com.alibaba.wireless        com.sankuai.meituan          org.mokee.lawnchair
 com.changba                 com.sdiread.kt.ktandroid     org.mokee.weatherservice
@@ -546,6 +549,46 @@ stephen@ubuntu:~/hooker$ cat .hooker_driver
 -H 192.168.0.105:27042
 ```
 
+
+# 更新教程
+hooker没有版本的概念，更新建议你的应用工作目录覆盖到最新的hooker目录下。建议每周一更，更新步骤建议采用如下操作顺序
+
+### 1. clone最新项目
+```shell
+git clone https://github.com/CreditTone/hooker.git
+```
+如果git clone比较慢，你可以下载文件解压https://github.com/CreditTone/hooker/archive/refs/heads/master.zip
+
+### 2. 方式一覆盖核心文件到你的hooker
+此种方式适用于你有自己的hooker本地仓库，所以只覆盖最新hooker的核心功能文件是便于你管理自己的hooker的。
+执行以下命令将核心文件覆盖到你本地的hooker
+
+```shell
+export LATEST_HOOKER=~/Download/hooker #这里要设置你下载的最新hooker目录
+export MY_HOOKER=~/hooker #这里要设置你的hooker目录
+
+#上面两个环境变量改好之后，下面的命令可以照抄
+cp -f $LATEST_HOOKER/hooker $MY_HOOKER/hooker
+cp -f $LATEST_HOOKER/hooker.py $MY_HOOKER/hooker.py
+cp -f $LATEST_HOOKER/radar.dex $MY_HOOKER/radar.dex
+cp -f $LATEST_HOOKER/run_env.py $MY_HOOKER/run_env.py
+cp -f $LATEST_HOOKER/xinitdeploy.py $MY_HOOKER/xinitdeploy.py
+cp -f $LATEST_HOOKER/spider.py $MY_HOOKER/spider.py
+cp -f $LATEST_HOOKER/colorful.py $MY_HOOKER/colorful.py
+cp -f $LATEST_HOOKER/requirements.txt $MY_HOOKER/requirements.txt
+rm -rf $MY_HOOKER/js
+cp -f $LATEST_HOOKER/js $MY_HOOKER/js
+```
+### 3. 方式二覆盖你的应用工作目录到最新hooker
+如果你不需要维护自己的hooker版本，就可以用这个方式。简单粗暴！
+
+```shell
+export LATEST_HOOKER=~/Download/hooker #这里要设置你下载的最新hooker目录
+export MY_HOOKER=~/hooker #这里要设置你的hooker目录
+
+#你有多少个目录就拷贝多少个吧
+cp -rf $MY_HOOKER/{your_app_package} $LATEST_HOOKER/ 
+```
 
 hooker实战应用
 =================
