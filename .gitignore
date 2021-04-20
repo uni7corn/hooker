@@ -1,4 +1,6 @@
 .iml
+*injectXServer.js
+*spider.js
 com.guazi*
 com.ganji*
 *.python-version
