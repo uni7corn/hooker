@@ -576,8 +576,8 @@ cp -f $LATEST_HOOKER/xinitdeploy.py $MY_HOOKER/xinitdeploy.py
 cp -f $LATEST_HOOKER/spider.py $MY_HOOKER/spider.py
 cp -f $LATEST_HOOKER/colorful.py $MY_HOOKER/colorful.py
 cp -f $LATEST_HOOKER/requirements.txt $MY_HOOKER/requirements.txt
-rm -rf $MY_HOOKER/js
-cp -f $LATEST_HOOKER/js $MY_HOOKER/js
+cp -rf $LATEST_HOOKER/js/* $MY_HOOKER/js/
+cp -rf $LATEST_HOOKER/mobile-deploy/* $MY_HOOKER/mobile-deploy/
 ```
 ### 3. 方式二覆盖你的应用工作目录到最新hooker
 如果你不需要维护自己的hooker版本，就可以用这个方式。简单粗暴！
