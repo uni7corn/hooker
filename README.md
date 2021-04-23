@@ -555,7 +555,7 @@ stephen@ubuntu:~/hooker$ cat .hooker_driver
 
 
 # 更新教程
-hooker没有版本的概念，更新建议你的应用工作目录覆盖到最新的hooker目录下。建议每周一更，更新步骤建议采用如下操作顺序
+hooker没有版本的概念，更新可以采用两种方式。建议每周一更，更新步骤建议采用如下操作顺序
 
 ### 1. clone最新项目
 ```shell

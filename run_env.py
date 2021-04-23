@@ -86,6 +86,8 @@ ssl_log_jscode = readJs("ssl_log.js")
 
 just_trust_me_jscode = readJs("just_trust_me.js")
 
+just_trust_me_okhttp_hook_finder_jscode = readJs("just_trust_me_okhttp_hook_finder.js")
+
 hook_RN_jscode = readJs("hook_RN.js")
 
 def getPythonLaucher():

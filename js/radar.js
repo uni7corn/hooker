@@ -64,10 +64,6 @@ function findClasses(classNameRegex) {
         var index = 0;
         Java.enumerateLoadedClasses({
             onMatch: function(className) {
-                if (!className) {
-                    console.error(" invalid:" + className);
-                    return;
-                }
                 if (clzReg.test(className)) {
                     var resultItem = discoverClass(className);
                     if (resultItem) {
