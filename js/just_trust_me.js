@@ -121,6 +121,19 @@ function processHttpClientAndroidLib() {
     }
 }
 
+//这是hooker添加的hook点，JustTrustMe中没有的。毕竟淫家JustTrustMe三年不更新了
+function processConscryptPlatform() {
+    var com_android_org_conscrypt_Platform_clz = Java.use('com.android.org.conscrypt.Platform');
+    var com_android_org_conscrypt_Platform_clz_method_checkServerTrusted_9565 = com_android_org_conscrypt_Platform_clz.checkServerTrusted.overload('javax.net.ssl.X509TrustManager', '[Ljava.security.cert.X509Certificate;', 'java.lang.String', 'com.android.org.conscrypt.OpenSSLEngineImpl');
+    com_android_org_conscrypt_Platform_clz_method_checkServerTrusted_9565.implementation = function(v0, v1, v2, v3) {
+        //什么都不做
+    };
+    var com_android_org_conscrypt_Platform_clz_method_checkServerTrusted_6928 = com_android_org_conscrypt_Platform_clz.checkServerTrusted.overload('javax.net.ssl.X509TrustManager', '[Ljava.security.cert.X509Certificate;', 'java.lang.String', 'com.android.org.conscrypt.OpenSSLSocketImpl');
+    com_android_org_conscrypt_Platform_clz_method_checkServerTrusted_6928.implementation = function(v0, v1, v2, v3) {
+        //什么都不做
+    };
+}
+
 Java.perform(function() {
     var Helper = Java.use("gz.justtrustme.Helper");
     var DefaultHttpClientClass = Java.use("org.apache.http.impl.client.DefaultHttpClient");
@@ -261,4 +274,6 @@ Java.perform(function() {
     processOkHttp();
     processXutils();
     processHttpClientAndroidLib();
+    //hooker添加的hook点
+    processConscryptPlatform();
 })
