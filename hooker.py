@@ -34,7 +34,7 @@ def checkRadarDex(packageName, online_script):
     radarDexPath = '/data/user/0/'+packageName+'/radar.dex';
     if not online_script.exports.checkfile(radarDexPath, len(data)):
         radarDexBase64 = base64.b64encode(data).decode()
-        #info("updating radar.dex......"+str(len(radarDexBase64)))
+        #info("update radar.dex......"+str(len(radarDexBase64)))
         online_script.exports.write(radarDexPath, radarDexBase64)
         time.sleep(1)
     online_script.exports.loaddex('gz.radar.ClassRadar', radarDexPath)
@@ -119,8 +119,6 @@ def createFile(filename, text):
             file.close()
             
 def onlyCheckHookingEnverment(packageName):
-    if os.path.exists(packageName):
-        return
     online_session = None
     try:
         online_session,_ = attach(packageName);
