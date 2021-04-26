@@ -183,7 +183,7 @@ def hookJs(packageName, hookCmdArg, savePath = None):
             ganaretoionJscode += jscode
         
         if savePath == None:
-            defaultFilename = hookCmdArg.replace(".", "_").replace(":", "_") + ".js"
+            defaultFilename = hookCmdArg.replace(".", "_").replace(":", "_").replace("$", "_").replace("__", "_") + ".js"
             savePath = packageName+"/"+defaultFilename;
         else:
             savePath = packageName+"/"+savePath;

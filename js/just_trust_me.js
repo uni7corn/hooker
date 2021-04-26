@@ -85,6 +85,31 @@ function processOkHttp() {
         console.error("没找到okhttp3.internal.tls.OkHostnameVerifier类，可能被混淆了。你可以jadx反编译下还原回来！");
     }
 
+    if (classExists("okhttp3.OkHttpClient$Builder")) {
+        try{
+            var okhttp3_OkHttpClient_Builder_clz = Java.use('okhttp3.OkHttpClient$Builder');
+            var okhttp3_OkHttpClient_Builder_clz_sslSocketFactory_one = okhttp3_OkHttpClient_Builder_clz.sslSocketFactory.overload('javax.net.ssl.SSLSocketFactory');
+            okhttp3_OkHttpClient_Builder_clz_sslSocketFactory_one.implementation = function(sSLSocketFactory) {
+        
+                var ret = okhttp3_OkHttpClient_Builder_clz_sslSocketFactory_one.call(this, sSLSocketFactory);
+        
+                return ret;
+            };
+
+
+            var okhttp3_OkHttpClient_Builder_clz_sslSocketFactory_two = okhttp3_OkHttpClient_Builder_clz.sslSocketFactory.overload('javax.net.ssl.SSLSocketFactory', 'javax.net.ssl.X509TrustManager');
+            okhttp3_OkHttpClient_Builder_clz_sslSocketFactory_two.implementation = function(sSLSocketFactory, x509TrustManager) {
+        
+                var ret = okhttp3_OkHttpClient_Builder_clz_sslSocketFactory_two.call(this, sSLSocketFactory, x509TrustManager);
+                
+                return ret;
+            };
+        } catch(error) {
+            console.error("okhttp3.OkHttpClient$Builder的sslSocketFactory方法可能被混淆了。你可以jadx反编译下还原回来！");
+        }
+    }else{
+        console.error("没找到okhttp3.OkHttpClient$Builder类，可能被混淆了。你可以jadx反编译下还原回来！");
+    }
 }
 
 
@@ -121,8 +146,11 @@ function processHttpClientAndroidLib() {
     }
 }
 
-//这是hooker添加的hook点，JustTrustMe中没有的。毕竟淫家JustTrustMe三年不更新了
+//这是hooker添加的hook点，原JustTrustMe中没有的
 function processConscryptPlatform() {
+    if (!classExists("com.android.org.conscrypt.Platform")) {
+        return;
+    }
     var com_android_org_conscrypt_Platform_clz = Java.use('com.android.org.conscrypt.Platform');
     var com_android_org_conscrypt_Platform_clz_method_checkServerTrusted_9565 = com_android_org_conscrypt_Platform_clz.checkServerTrusted.overload('javax.net.ssl.X509TrustManager', '[Ljava.security.cert.X509Certificate;', 'java.lang.String', 'com.android.org.conscrypt.OpenSSLEngineImpl');
     com_android_org_conscrypt_Platform_clz_method_checkServerTrusted_9565.implementation = function(v0, v1, v2, v3) {
@@ -133,6 +161,20 @@ function processConscryptPlatform() {
         //什么都不做
     };
 }
+
+
+//这是hooker添加的hook点，原JustTrustMe中没有的
+function processPinningTrustManager() {
+    if (!classExists("appcelerator.https.PinningTrustManager")) {
+        return;
+    }
+    var pinningTrustManagerClass = Java.use('appcelerator.https.PinningTrustManager');
+    var pinningTrustManagerClass_checkServerTrusted = pinningTrustManagerClass.checkServerTrusted.overload();
+    pinningTrustManagerClass_checkServerTrusted.implementation = function() {
+        //什么都不做
+    };
+}
+
 
 Java.perform(function() {
     var Helper = Java.use("gz.justtrustme.Helper");
@@ -276,4 +318,5 @@ Java.perform(function() {
     processHttpClientAndroidLib();
     //hooker添加的hook点
     processConscryptPlatform();
+    processPinningTrustManager();
 })
