@@ -90,18 +90,14 @@ function processOkHttp() {
             var okhttp3_OkHttpClient_Builder_clz = Java.use('okhttp3.OkHttpClient$Builder');
             var okhttp3_OkHttpClient_Builder_clz_sslSocketFactory_one = okhttp3_OkHttpClient_Builder_clz.sslSocketFactory.overload('javax.net.ssl.SSLSocketFactory');
             okhttp3_OkHttpClient_Builder_clz_sslSocketFactory_one.implementation = function(sSLSocketFactory) {
-        
-                var ret = okhttp3_OkHttpClient_Builder_clz_sslSocketFactory_one.call(this, sSLSocketFactory);
-        
+                //把参数替换成EmptySSLFactory
+                var ret = okhttp3_OkHttpClient_Builder_clz_sslSocketFactory_one.call(this, Java.use("gz.justtrustme.Helper").getEmptySSLFactory());
                 return ret;
             };
-
-
             var okhttp3_OkHttpClient_Builder_clz_sslSocketFactory_two = okhttp3_OkHttpClient_Builder_clz.sslSocketFactory.overload('javax.net.ssl.SSLSocketFactory', 'javax.net.ssl.X509TrustManager');
             okhttp3_OkHttpClient_Builder_clz_sslSocketFactory_two.implementation = function(sSLSocketFactory, x509TrustManager) {
-        
-                var ret = okhttp3_OkHttpClient_Builder_clz_sslSocketFactory_two.call(this, sSLSocketFactory, x509TrustManager);
-                
+                //把参数替换成EmptySSLFactory
+                var ret = okhttp3_OkHttpClient_Builder_clz_sslSocketFactory_two.call(this, Java.use("gz.justtrustme.Helper").getEmptySSLFactory(), x509TrustManager);
                 return ret;
             };
         } catch(error) {

@@ -85,6 +85,27 @@ function processOkHttp() {
         console.error("没找到okhttp3.internal.tls.OkHostnameVerifier类，可能被混淆了。你可以jadx反编译下还原回来！");
     }
 
+    if (classExists("okhttp3.OkHttpClient$Builder")) {
+        try{
+            var okhttp3_OkHttpClient_Builder_clz = Java.use('okhttp3.OkHttpClient$Builder');
+            var okhttp3_OkHttpClient_Builder_clz_sslSocketFactory_one = okhttp3_OkHttpClient_Builder_clz.sslSocketFactory.overload('javax.net.ssl.SSLSocketFactory');
+            okhttp3_OkHttpClient_Builder_clz_sslSocketFactory_one.implementation = function(sSLSocketFactory) {
+                //把参数替换成EmptySSLFactory
+                var ret = okhttp3_OkHttpClient_Builder_clz_sslSocketFactory_one.call(this, Java.use("gz.justtrustme.Helper").getEmptySSLFactory());
+                return ret;
+            };
+            var okhttp3_OkHttpClient_Builder_clz_sslSocketFactory_two = okhttp3_OkHttpClient_Builder_clz.sslSocketFactory.overload('javax.net.ssl.SSLSocketFactory', 'javax.net.ssl.X509TrustManager');
+            okhttp3_OkHttpClient_Builder_clz_sslSocketFactory_two.implementation = function(sSLSocketFactory, x509TrustManager) {
+                //把参数替换成EmptySSLFactory
+                var ret = okhttp3_OkHttpClient_Builder_clz_sslSocketFactory_two.call(this, Java.use("gz.justtrustme.Helper").getEmptySSLFactory(), x509TrustManager);
+                return ret;
+            };
+        } catch(error) {
+            console.error("okhttp3.OkHttpClient$Builder的sslSocketFactory方法可能被混淆了。你可以jadx反编译下还原回来！");
+        }
+    }else{
+        console.error("没找到okhttp3.OkHttpClient$Builder类，可能被混淆了。你可以jadx反编译下还原回来！");
+    }
 }
 
 
@@ -121,6 +142,36 @@ function processHttpClientAndroidLib() {
     }
 }
 
+//这是hooker添加的hook点，原JustTrustMe中没有的
+function processConscryptPlatform() {
+    if (!classExists("com.android.org.conscrypt.Platform")) {
+        return;
+    }
+    var com_android_org_conscrypt_Platform_clz = Java.use('com.android.org.conscrypt.Platform');
+    var com_android_org_conscrypt_Platform_clz_method_checkServerTrusted_9565 = com_android_org_conscrypt_Platform_clz.checkServerTrusted.overload('javax.net.ssl.X509TrustManager', '[Ljava.security.cert.X509Certificate;', 'java.lang.String', 'com.android.org.conscrypt.OpenSSLEngineImpl');
+    com_android_org_conscrypt_Platform_clz_method_checkServerTrusted_9565.implementation = function(v0, v1, v2, v3) {
+        //什么都不做
+    };
+    var com_android_org_conscrypt_Platform_clz_method_checkServerTrusted_6928 = com_android_org_conscrypt_Platform_clz.checkServerTrusted.overload('javax.net.ssl.X509TrustManager', '[Ljava.security.cert.X509Certificate;', 'java.lang.String', 'com.android.org.conscrypt.OpenSSLSocketImpl');
+    com_android_org_conscrypt_Platform_clz_method_checkServerTrusted_6928.implementation = function(v0, v1, v2, v3) {
+        //什么都不做
+    };
+}
+
+
+//这是hooker添加的hook点，原JustTrustMe中没有的
+function processPinningTrustManager() {
+    if (!classExists("appcelerator.https.PinningTrustManager")) {
+        return;
+    }
+    var pinningTrustManagerClass = Java.use('appcelerator.https.PinningTrustManager');
+    var pinningTrustManagerClass_checkServerTrusted = pinningTrustManagerClass.checkServerTrusted.overload();
+    pinningTrustManagerClass_checkServerTrusted.implementation = function() {
+        //什么都不做
+    };
+}
+
+
 Java.perform(function() {
     var Helper = Java.use("gz.justtrustme.Helper");
     var DefaultHttpClientClass = Java.use("org.apache.http.impl.client.DefaultHttpClient");
@@ -128,7 +179,7 @@ Java.perform(function() {
     var DefaultHttpClientClassRapeConstructor = DefaultHttpClientClass.$init.overload('org.apache.http.conn.ClientConnectionManager', 'org.apache.http.params.HttpParams');
     DefaultHttpClientClassRapeConstructor.implementation = function(v0, v1) {
         //被强奸的构造方法被调用的话，我们替换调ClientConnectionManager参数为我们的
-        var returnObj = DefaultHttpClientClassRapeConstructor.call(this, Helper.getSCCM(), v1);
+        var returnObj = DefaultHttpClientClassRapeConstructor.call(this, Helper.getCCM(v0, v1), v1);
         console.log("org.apache.http.impl.client.DefaultHttpClient.$init('org.apache.http.conn.ClientConnectionManager', 'org.apache.http.params.HttpParams') was hooked!");
         return returnObj;
     };
@@ -261,4 +312,7 @@ Java.perform(function() {
     processOkHttp();
     processXutils();
     processHttpClientAndroidLib();
+    //hooker添加的hook点
+    processConscryptPlatform();
+    processPinningTrustManager();
 })
