@@ -90,7 +90,7 @@ hooker是一个基于frida实现的逆向工具包。为逆向开发人员提供
 - 提供操作原生AndroidUI功能：你可以./attach每个app目录下的android_ui.js脚本，它提供了通过ViewId、ViewText找到Android原生的View并点击，或者你想强制打开某个Activity（比如某个界面只有会员才能进入，这时候你就可以采用Android"原生代码"打开的方式）。
 
 # 环境部署
-前言：hooker仅支持在Linux和MacOS下运行，并且现在和将来都不会支持windows操作系统！windows命令行就是垃圾中的垃圾，windows从诞生起的产品定位就不是给专业的计算机人员使用的。基因上它就不具备开发环境的属性，请不要用windows做开发，不要让我鄙视你，好吗？
+前言：hooker仅支持在Linux和MacOS下运行，并且现在和将来都不会支持windows操作系统！windows做开发是没有灵魂的！
 
 ### 1. git clone项目
 ```shell
