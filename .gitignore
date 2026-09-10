@@ -1,19 +1,24 @@
 .iml
 *injectXServer.js
 *spider.js
-com.guazi*
-com.ganji*
 *.python-version
 */xinit/*.dex
 *pydevproject
 .DS_Store
 log
 .*source/.*
-com.example.myapplication/
 __handlers__/
 build/
 __pycache__
 *.jar
+*.apk
+*.dex
+*.aar
+*.so
+dex2jar-output/
+# Hooker runtime state and per-app reverse-engineering workspaces
+/.cache/
+/com.*/
 .idea/
 .classpath
 .project
@@ -23,5 +28,3 @@ logs/
 data/doc/
 data/test/
 .vscode/
-com.*
-cn.com.*

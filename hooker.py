@@ -34,6 +34,8 @@ import itertools
 import jsbeautifier
 import logging
 import subprocess
+import shlex
+import uuid
 import filecmp
 import argparse
 import pprint
@@ -56,11 +58,20 @@ from androguard.core.analysis.analysis import MethodAnalysis
 from typing import Optional, Tuple, List, Dict
 from adbutils.errors import AdbError
 from prompt_toolkit import PromptSession
+from prompt_toolkit.application import Application
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.completion import NestedCompleter
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.filters import has_completions
+from prompt_toolkit.layout import HSplit, Layout, Window
+from prompt_toolkit.layout.containers import ConditionalContainer, Float, FloatContainer
+from prompt_toolkit.layout.menus import CompletionsMenu
+from prompt_toolkit.widgets import TextArea
 from prompt_toolkit.patch_stdout import patch_stdout
 from wcwidth import wcswidth
+
+CONFIG_MODE = len(sys.argv) > 1 and sys.argv[1] == "config"
 
 
 def find_android_home() -> Optional[str]:
@@ -252,19 +263,730 @@ def print_js_file(filenames :list):
         line = "".join(f"{GREEN}{name.ljust(max_len)}{RESET}" for name in filenames[i:i + items_per_line])
         print(line)
 
+
+def prompt_with_border(prompt_text, completer=None):
+    """绘制只有上下边界的命令输入框。"""
+    text_area = TextArea(
+        prompt=prompt_text,
+        completer=completer,
+        complete_while_typing=True,
+        multiline=False,
+        wrap_lines=False,
+        height=1,
+        dont_extend_height=True,
+        scrollbar=False,
+        style="fg:#ffffff bg:#2b2b2b",
+    )
+    bindings = KeyBindings()
+
+    @bindings.add("enter")
+    def accept_input(event):
+        event.app.exit(result=text_area.text)
+
+    @bindings.add("c-c")
+    def cancel_input(event):
+        event.app.exit(exception=KeyboardInterrupt())
+
+    @bindings.add("c-d")
+    def eof_input(event):
+        event.app.exit(exception=EOFError())
+
+    input_layout = HSplit([
+        text_area,
+        ConditionalContainer(
+            Window(height=8, style="bg:#000000"),
+            filter=has_completions,
+        ),
+    ])
+    application = Application(
+        layout=Layout(FloatContainer(
+            content=input_layout,
+            floats=[Float(
+                content=ConditionalContainer(
+                    CompletionsMenu(max_height=8, scroll_offset=1),
+                    filter=has_completions,
+                ),
+                xcursor=True,
+                ycursor=True,
+            )],
+        )),
+        key_bindings=bindings,
+        full_screen=False,
+        mouse_support=False,
+    )
+    return application.run()
+
 def read_js_resource(filename):
     return io.open('./js/' + filename,'r',encoding= 'utf8').read()
         
-cmd_session = None
+cmd_session = PromptSession()
+
+AGENT_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache", "hooker", "agent.json")
+DEVICE_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache", "hooker", "device.json")
+AGENT_SESSIONS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache", "hooker", "agent-sessions.json")
+
+
+def detect_local_agents():
+    agents = []
+    for name in ("codex", "claude"):
+        path = shutil.which(name)
+        if path:
+            agents.append({"name": name, "command": path})
+    return agents
+
+
+def load_agent_config():
+    try:
+        with open(AGENT_CONFIG_PATH, "r", encoding="utf-8") as config_file:
+            config = json.load(config_file)
+        agent = config.get("agent")
+        if agent and agent.get("provider") in {"codex", "claude", "disabled"}:
+            if agent.get("provider") == "disabled":
+                return agent
+            command = agent.get("command")
+            if command and os.path.isfile(command) and os.access(command, os.X_OK):
+                agent.setdefault("mode", "native_split")
+                return agent
+    except (OSError, ValueError, TypeError):
+        pass
+    return None
+
+
+def save_agent_config(provider, command=None, mode="native_split"):
+    config_dir = os.path.dirname(AGENT_CONFIG_PATH)
+    os.makedirs(config_dir, exist_ok=True)
+    config = {"agent": {"provider": provider, "command": command, "mode": mode}}
+    with open(AGENT_CONFIG_PATH, "w", encoding="utf-8") as config_file:
+        json.dump(config, config_file, ensure_ascii=False, indent=2)
+
+
+def initialize_agent_config(force=False):
+    configured_agent = None if force else load_agent_config()
+    if configured_agent:
+        provider = configured_agent["provider"]
+        if provider == "disabled":
+            info("Agent disabled; using traditional command mode")
+        else:
+            info(f"Agent configured: {provider} ({configured_agent['command']})")
+        return configured_agent
+
+    available_agents = detect_local_agents()
+    print("\nSelect the local agent for Hooker:")
+    for index, agent in enumerate(available_agents, start=1):
+        print(f"{index}. {agent['name']} ({agent['command']})")
+    disabled_index = len(available_agents) + 1
+    print(f"{disabled_index}. Traditional command mode")
+
+    while True:
+        choice = cmd_session.prompt("Agent: ").strip()
+        if choice.isdigit():
+            choice_index = int(choice)
+            if 1 <= choice_index <= len(available_agents):
+                selected = available_agents[choice_index - 1]
+                save_agent_config(selected["name"], selected["command"])
+                info(f"Agent saved: {selected['name']}")
+                return selected
+            if choice_index == disabled_index:
+                save_agent_config("disabled")
+                info("Agent disabled; using traditional command mode")
+                return {"provider": "disabled", "command": None}
+        warn("Please select a valid agent number")
+
+
+def _load_agent_sessions():
+    try:
+        with open(AGENT_SESSIONS_PATH, "r", encoding="utf-8") as sessions_file:
+            sessions = json.load(sessions_file)
+        return sessions if isinstance(sessions, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _save_agent_sessions(sessions):
+    config_dir = os.path.dirname(AGENT_SESSIONS_PATH)
+    os.makedirs(config_dir, exist_ok=True)
+    with open(AGENT_SESSIONS_PATH, "w", encoding="utf-8") as sessions_file:
+        json.dump(sessions, sessions_file, ensure_ascii=False, indent=2)
+
+
+@dataclass
+class AgentEvent:
+    """Agent 后端向 Hooker UI 发送的统一事件。"""
+    kind: str
+    text: str = ""
+    session_id: Optional[str] = None
+    detail: Optional[str] = None
+
+
+class AgentBackend:
+    """Agent 连接层接口，UI 不直接依赖具体 Agent 的输出格式。"""
+
+    def send(self, prompt: str):
+        raise NotImplementedError
+
+    def close(self):
+        pass
+
+
+def _claude_event_to_agent_event(event):
+    if not isinstance(event, dict):
+        return None
+    event_type = event.get("type")
+    if event_type == "system":
+        return AgentEvent("session", session_id=event.get("session_id"))
+    if event_type == "stream_event":
+        inner_event = event.get("event", {})
+        delta = inner_event.get("delta", {})
+        if delta.get("type") == "text_delta" and delta.get("text"):
+            return AgentEvent("text", text=delta["text"])
+    if event_type == "assistant":
+        return AgentEvent("assistant", detail="Agent 正在处理请求")
+    if event_type == "tool_use":
+        return AgentEvent("tool", detail=event.get("name") or "调用工具")
+    if event_type == "result":
+        return AgentEvent(
+            "completed",
+            text=event.get("result") or "",
+            session_id=event.get("session_id"),
+        )
+    return None
+
+
+class ClaudeStreamBackend(AgentBackend):
+    """Claude Code 双向 stream-json 后端，进程生命周期覆盖多个请求。"""
+
+    def __init__(self, command, working_dir, project_root, session_id=None):
+        self.command = command
+        self.working_dir = working_dir
+        self.project_root = project_root
+        self.session_id = session_id
+        self.process = None
+
+    def _start(self):
+        args = [
+            self.command, "-p",
+            "--input-format", "stream-json",
+            "--output-format", "stream-json",
+            "--include-partial-messages",
+            "--verbose",
+            "--add-dir", self.project_root,
+        ]
+        if self.session_id:
+            args.extend(["--resume", self.session_id])
+        self.process = subprocess.Popen(
+            args,
+            cwd=self.working_dir,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+
+    def send(self, prompt):
+        if self.process is None or self.process.poll() is not None:
+            self._start()
+        payload = {
+            "type": "user",
+            "message": {"role": "user", "content": prompt},
+        }
+        self.process.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        self.process.stdin.flush()
+        for line in self.process.stdout:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                if line.strip():
+                    yield AgentEvent("status", detail=line.strip())
+                continue
+            agent_event = _claude_event_to_agent_event(event)
+            if agent_event is None:
+                continue
+            if agent_event.session_id:
+                self.session_id = agent_event.session_id
+            yield agent_event
+            if agent_event.kind == "completed":
+                return
+
+    def close(self):
+        if self.process and self.process.poll() is None:
+            self.process.terminate()
+        self.process = None
+
+
+class LegacyCliBackend(AgentBackend):
+    """兼容后端：用于尚未接入原生协议的 Agent。"""
+
+    def __init__(self, args, provider, working_dir):
+        self.args = args
+        self.provider = provider
+        self.working_dir = working_dir
+
+    def send(self, prompt=None):
+        returncode, session_id, response = _stream_agent_process(
+            self.args, self.provider, self.working_dir
+        )
+        if response:
+            yield AgentEvent("text", text=response)
+        yield AgentEvent(
+            "completed" if returncode == 0 else "error",
+            session_id=session_id,
+            detail=f"exit code {returncode}" if returncode else None,
+        )
+
+
+agent_backends = {}
+agent_native_panes = {}
+
+
+def _escape_applescript_string(value):
+    return (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+    )
+
+
+def _native_agent_command(
+    provider, command, working_dir, project_root, session_id, prompt, new_session=False
+):
+    args = [command]
+    if provider == "claude":
+        if session_id and new_session:
+            args.extend(["--session-id", session_id])
+        elif session_id:
+            args.extend(["--resume", session_id])
+        args.extend(["--add-dir", project_root, prompt])
+    elif session_id:
+        args.extend(["resume", session_id, prompt])
+    else:
+        args.append(prompt)
+    shell_command = "cd " + shlex.quote(working_dir) + " && exec " + shlex.join(args)
+    return shell_command
+
+
+def _open_native_agent_pane(
+    provider, command, working_dir, project_root, session_id, prompt, new_session=False
+):
+    """在真实 TTY 中启动 Agent，返回 pane/session 标识。"""
+    shell_command = _native_agent_command(
+        provider, command, working_dir, project_root, session_id, prompt, new_session
+    )
+    if os.environ.get("TMUX") and shutil.which("tmux"):
+        result = subprocess.run(
+            ["tmux", "split-window", "-h", "-P", "-F", "#{pane_id}", "-c", working_dir, shell_command],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return {"transport": "tmux", "target": result.stdout.strip()}
+
+    if os.environ.get("TERM_PROGRAM") == "WezTerm" and shutil.which("wezterm"):
+        result = subprocess.run(
+            [
+                "wezterm", "cli", "split-pane", "--right", "--cwd", working_dir,
+                "--", "sh", "-lc", shell_command,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return {"transport": "wezterm", "target": result.stdout.strip()}
+
+    if os.environ.get("TERM_PROGRAM") == "iTerm.app" and shutil.which("osascript"):
+        escaped = _escape_applescript_string(shell_command)
+        script = (
+            'tell application "iTerm2"\n'
+            "tell current window\n"
+            "tell current session\n"
+            "set newSession to (split vertically with default profile)\n"
+            f'tell newSession to write text "{escaped}"\n'
+            "return (id of newSession as text)\n"
+            "end tell\n"
+            "end tell\n"
+            "end tell"
+        )
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return {"transport": "iterm", "target": result.stdout.strip()}
+    if platform.system() == "Darwin" and shutil.which("osascript"):
+        escaped = _escape_applescript_string(shell_command)
+        script = (
+            'tell application "Terminal"\n'
+            "activate\n"
+            f'set newTab to do script "{escaped}"\n'
+            "return (id of newTab as text)\n"
+            "end tell"
+        )
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return {"transport": "terminal", "target": result.stdout.strip()}
+    raise RuntimeError("当前终端不支持原生分屏，请使用 tmux 或 iTerm2")
+
+
+def _send_native_agent_pane(pane, text):
+    """向已经打开的原生 Agent pane 输入下一条消息。"""
+    if pane["transport"] == "tmux":
+        subprocess.run(
+            ["tmux", "send-keys", "-t", pane["target"], text, "Enter"],
+            check=True,
+        )
+        return
+    if pane["transport"] == "iterm":
+        escaped_text = _escape_applescript_string(text)
+        escaped_id = _escape_applescript_string(pane["target"])
+        script = (
+            'tell application "iTerm2"\n'
+            "repeat with aWindow in windows\n"
+            "repeat with aTab in tabs of aWindow\n"
+            "repeat with aSession in sessions of aTab\n"
+            f'if (id of aSession as text) is "{escaped_id}" then\n'
+            f'tell aSession to write text "{escaped_text}"\n'
+            "return\n"
+            "end if\n"
+            "end repeat\n"
+            "end repeat\n"
+            "end repeat\n"
+            "end tell"
+        )
+        subprocess.run(["osascript", "-e", script], check=True)
+        return
+    if pane["transport"] == "terminal":
+        escaped_text = _escape_applescript_string(text)
+        escaped_id = _escape_applescript_string(pane["target"])
+        script = (
+            'tell application "Terminal"\n'
+            "repeat with aWindow in windows\n"
+            "repeat with aTab in tabs of aWindow\n"
+            f'if (id of aTab as text) is "{escaped_id}" then\n'
+            f'do script "{escaped_text}" in aTab\n'
+            "return\n"
+            "end if\n"
+            "end repeat\n"
+            "end repeat\n"
+            "end tell"
+        )
+        subprocess.run(["osascript", "-e", script], check=True)
+        return
+    if pane["transport"] == "wezterm":
+        subprocess.run(
+            ["wezterm", "cli", "send-text", "--pane-id", pane["target"], "--no-paste", text + "\n"],
+            check=True,
+        )
+        return
+    raise RuntimeError(f"未知的 Agent pane 类型: {pane['transport']}")
+
+
+def _parse_agent_result(provider, output):
+    """提取 Agent 文本回复和会话 ID，兼容 Claude JSON 与 Codex JSONL。"""
+    session_id = None
+    response = output.strip()
+    if provider == "claude":
+        try:
+            payload = json.loads(output)
+            session_id = payload.get("session_id")
+            response = payload.get("result") or payload.get("message") or response
+        except (ValueError, TypeError):
+            pass
+        return session_id, response
+
+    messages = []
+    for line in output.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("type") == "thread.started":
+            session_id = event.get("thread_id")
+        item = event.get("item", {})
+        if item.get("type") == "agent_message" and item.get("text"):
+            messages.append(item["text"])
+    if messages:
+        response = "\n".join(messages)
+    return session_id, response
+
+
+def _stream_agent_process(args, provider, working_dir):
+    """流式显示 Agent 的公开输出，不暴露模型内部隐藏推理。"""
+    session_id = None
+    response_parts = []
+    streamed_text = False
+    process = subprocess.Popen(
+        args,
+        cwd=working_dir,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    print("\033[36mAgent>\033[0m ", end="", flush=True)
+    for line in process.stdout:
+        line = line.rstrip("\n")
+        try:
+            event = json.loads(line)
+        except ValueError:
+            if line:
+                print(line, flush=True)
+            continue
+
+        if provider == "claude":
+            if event.get("type") == "system":
+                session_id = event.get("session_id") or session_id
+            elif event.get("type") == "stream_event":
+                inner_event = event.get("event", {})
+                delta = inner_event.get("delta", {})
+                if delta.get("type") == "text_delta" and delta.get("text"):
+                    text = delta["text"]
+                    print(text, end="", flush=True)
+                    response_parts.append(text)
+                    streamed_text = True
+            elif event.get("type") == "result":
+                session_id = event.get("session_id") or session_id
+                if not streamed_text and event.get("result"):
+                    print(event["result"], end="", flush=True)
+                    response_parts.append(event["result"])
+        else:
+            if event.get("type") == "thread.started":
+                session_id = event.get("thread_id") or session_id
+            item = event.get("item", {})
+            item_type = item.get("type")
+            if item_type == "agent_message" and item.get("text"):
+                text = item["text"]
+                print(text, end="", flush=True)
+                response_parts.append(text)
+                streamed_text = True
+            elif item_type in {"command_execution", "file_change", "mcp_tool_call"}:
+                print(f"\n\033[90m[Agent {item_type}]\033[0m ", end="", flush=True)
+    process.wait()
+    print("\n", flush=True)
+    return process.returncode, session_id, "".join(response_parts)
+
+
+def invoke_local_agent(user_prompt):
+    if not active_agent_config or active_agent_config.get("provider") == "disabled":
+        return False
+    if not current_working_dir or not os.path.isdir(current_working_dir):
+        warn("当前没有可用的版本工作目录，无法启动 Agent")
+        return True
+
+    provider = active_agent_config["provider"]
+    command = active_agent_config["command"]
+    working_dir = os.path.abspath(current_working_dir)
+    project_root = os.path.dirname(os.path.abspath(__file__))
+    sessions = _load_agent_sessions()
+    session_key = f"{provider}:{working_dir}"
+    session_id = sessions.get(session_key)
+    context = (
+        "你正在 Hooker 逆向工作台中工作。\n"
+        f"当前 App: {current_identifier}\n"
+        f"当前版本: {current_identifier_version}\n"
+        f"当前工作目录: {working_dir}\n"
+        f"项目内置 Android 逆向 skill: {project_root}/.agents/skills/android-reverse-engineering/SKILL.md\n"
+        "请优先在当前版本目录内分析和操作，回答时说明你执行了什么以及结果。\n\n"
+        f"用户请求：{user_prompt}"
+    )
+
+    if active_agent_config.get("mode", "native_split") == "native_split":
+        try:
+            pane = agent_native_panes.get(session_key)
+            if pane:
+                _send_native_agent_pane(pane, context)
+                info(f"已将请求发送到 {provider} 原生分屏")
+            else:
+                native_session_id = session_id
+                if provider == "claude" and not native_session_id:
+                    native_session_id = str(uuid.uuid4())
+                pane = _open_native_agent_pane(
+                    provider, command, working_dir, project_root,
+                    native_session_id, context, new_session=not bool(session_id)
+                )
+                agent_native_panes[session_key] = pane
+                if native_session_id:
+                    sessions[session_key] = native_session_id
+                    _save_agent_sessions(sessions)
+                info(f"已打开 {provider} 原生分屏，Agent 将在独立终端中运行")
+            return True
+        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            warn(f"原生分屏启动失败，回退到嵌入模式: {error}")
+
+    if provider == "claude":
+        args = [
+            command, "-p", context,
+            "--output-format", "stream-json",
+            "--include-partial-messages",
+            "--verbose",
+            "--add-dir", project_root,
+        ]
+        if session_id:
+            args.extend(["--resume", session_id])
+    else:
+        if session_id:
+            args = [command, "exec", "resume", session_id, "--json", context]
+        else:
+            args = [command, "exec", "--json", "--skip-git-repo-check", "-C", working_dir, "--add-dir", project_root, context]
+
+    info(f"Agent {provider} is working...")
+
+    # Claude 使用长驻双向协议，避免每条消息重新创建进程并读取一次性 stdout。
+    if provider == "claude":
+        backend = agent_backends.get(session_key)
+        if backend is None or not isinstance(backend, ClaudeStreamBackend):
+            backend = ClaudeStreamBackend(
+                command, working_dir, project_root, session_id=session_id
+            )
+            agent_backends[session_key] = backend
+        response_parts = []
+        new_session_id = session_id
+        completed = False
+        print("\033[36mAgent>\033[0m ", end="", flush=True)
+        try:
+            for event in backend.send(context):
+                if event.session_id:
+                    new_session_id = event.session_id
+                if event.kind == "text" and event.text:
+                    print(event.text, end="", flush=True)
+                    response_parts.append(event.text)
+                elif event.kind == "tool" and event.detail:
+                    print(f"\n\033[90m[Agent {event.detail}]\033[0m ", end="", flush=True)
+                elif event.kind == "status" and event.detail:
+                    print(f"\n\033[90m[{event.detail}]\033[0m ", end="", flush=True)
+                elif event.kind == "completed" and event.text and not response_parts:
+                    print(event.text, end="", flush=True)
+                    response_parts.append(event.text)
+                if event.kind == "completed":
+                    completed = True
+                elif event.kind == "error":
+                    warn(event.detail or "Agent 执行失败")
+            print("\n", flush=True)
+        except (OSError, BrokenPipeError, ValueError) as error:
+            backend.close()
+            agent_backends.pop(session_key, None)
+            warn(f"Agent 原生连接失败，回退到 CLI 模式: {error}")
+        else:
+            if not completed:
+                backend.close()
+                agent_backends.pop(session_key, None)
+            else:
+                if new_session_id:
+                    sessions[session_key] = new_session_id
+                    _save_agent_sessions(sessions)
+                return True
+
+    # Codex 以及原生连接失败时，继续使用已有的 CLI 兼容路径。
+    try:
+        returncode, new_session_id, response = _stream_agent_process(args, provider, working_dir)
+    except OSError as error:
+        warn(f"Agent 启动失败: {error}")
+        return True
+
+    if returncode != 0 and session_id:
+        # 会话可能已被 Agent 清理，删除旧 ID 后用新会话重试一次。
+        sessions.pop(session_key, None)
+        _save_agent_sessions(sessions)
+        return invoke_local_agent(user_prompt)
+    if returncode != 0:
+        warn(f"Agent exited with code {returncode}")
+        return True
+
+    if new_session_id:
+        sessions[session_key] = new_session_id
+        _save_agent_sessions(sessions)
+    return True
 
 
 adb_device = None
 
-def _init_adb_device():
-    global adb_device
-    adb_device = adbutils.adb.device()
 
-_init_adb_device()
+def _device_serial(device):
+    """返回 adbutils 设备的稳定 serial，兼容不同 adbutils 版本。"""
+    return getattr(device, "serial", None) or getattr(device, "serialno", None)
+
+
+def _device_label(device):
+    serial = _device_serial(device) or "unknown"
+    try:
+        model = device.prop.get("ro.product.model") or "unknown model"
+    except Exception:
+        model = "unknown model"
+    state = getattr(device, "state", "unknown")
+    return f"{serial} ({model}, {state})"
+
+
+def _load_device_serial():
+    try:
+        with open(DEVICE_CONFIG_PATH, "r", encoding="utf-8") as config_file:
+            config = json.load(config_file)
+        serial = config.get("serial")
+        return serial if isinstance(serial, str) and serial else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _save_device_serial(serial):
+    config_dir = os.path.dirname(DEVICE_CONFIG_PATH)
+    os.makedirs(config_dir, exist_ok=True)
+    with open(DEVICE_CONFIG_PATH, "w", encoding="utf-8") as config_file:
+        json.dump({"serial": serial}, config_file, ensure_ascii=False, indent=2)
+
+
+def _select_adb_device(devices):
+    if len(devices) == 1:
+        return devices[0]
+
+    print("\n检测到多个 Android 设备，请选择设备：")
+    for index, device in enumerate(devices, start=1):
+        print(f"{index}. {_device_label(device)}")
+
+    while True:
+        try:
+            choice = input("设备编号: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            raise RuntimeError("未选择 Android 设备，Hooker 无法继续")
+        if choice.isdigit() and 1 <= int(choice) <= len(devices):
+            return devices[int(choice) - 1]
+        warn("请输入有效的设备编号")
+
+
+def _init_adb_device(force=False):
+    global adb_device
+    devices = adbutils.adb.device_list()
+    if not devices:
+        raise RuntimeError("未检测到 Android 设备，请确认 adb 已连接设备或模拟器")
+
+    saved_serial = None if force else _load_device_serial()
+    if saved_serial:
+        for device in devices:
+            if _device_serial(device) == saved_serial:
+                adb_device = device
+                info(f"使用已保存的 Android 设备: {_device_label(device)}")
+                return
+
+    adb_device = _select_adb_device(devices)
+    serial = _device_serial(adb_device)
+    if serial:
+        _save_device_serial(serial)
+    info(f"已选择 Android 设备: {_device_label(adb_device)}")
+
+if not CONFIG_MODE:
+    _init_adb_device()
+
+if CONFIG_MODE:
+    active_agent_config = initialize_agent_config(force=True)
+    try:
+        _init_adb_device(force=True)
+    except RuntimeError as error:
+        warn(str(error))
+    info("配置已更新")
+    sys.exit(0)
 
 def _shell(cmd, stream=False):
     return adb_device.shell(cmd, stream=stream)
@@ -308,10 +1030,59 @@ def get_is_magisk_root() -> bool:
 is_magisk_root = get_is_magisk_root()
 
 
+frida_device = None
+frida_forward_port = None
+
+
+def _get_frida_forward_port(serial):
+    global frida_forward_port
+    if frida_forward_port:
+        return frida_forward_port
+
+    port_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        port_socket.bind(("127.0.0.1", 0))
+        local_port = port_socket.getsockname()[1]
+    finally:
+        port_socket.close()
+
+    subprocess.run(
+        ["adb", "-s", serial, "forward", f"tcp:{local_port}", "tcp:27042"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    frida_forward_port = local_port
+    return local_port
+
+
+def _get_frida_device():
+    """让 Frida 连接跟随当前选中的 ADB 设备。"""
+    global frida_device
+    if frida_device:
+        return frida_device
+
+    driver_file = ".hooker_driver"
+    if os.path.isfile(driver_file):
+        driver_text = io.open(driver_file, 'r', encoding='utf8').read().strip()
+        remote_driver = re.search(r'\d+\.\d+\.\d+\.\d+:\d+', driver_text)
+        if remote_driver:
+            frida_device = frida.get_device_manager().add_remote_device(remote_driver.group())
+            return frida_device
+
+    serial = _device_serial(adb_device)
+    if serial and ":" in serial:
+        local_port = _get_frida_forward_port(serial)
+        frida_device = frida.get_device_manager().add_remote_device(f"127.0.0.1:{local_port}")
+    else:
+        frida_device = frida.get_usb_device(1000)
+    return frida_device
+
+
 #初始化frida运行环境
 def is_frida_working_via_attach(target_package="com.android.systemui"):
     try:
-        __device = frida.get_usb_device(timeout=3)  # or use add_remote_device(ip)
+        __device = _get_frida_device()
         pid = __device.get_process(target_package).pid  # 先确认包是否存在
         _session = __device.attach(pid)
         _session.detach()
@@ -364,20 +1135,21 @@ def pull_file_to_local(remote_file, local_path, is_debug=True):
         info(f"pull {remote_file} to {local_path} successful")
         
 def push_file_to_remote(local_path, remote_path, is_debug=True):
-    # info(f"push {local_path} to {remote_path}")
     from adbutils.errors import AdbError
+    serial = _device_serial(adb_device)
+    if not serial:
+        raise RuntimeError("当前 Android 设备没有有效 serial")
+
     try:
-        # 先尝试标准推送
         adb_device.sync.push(local_path, remote_path)
-    except AdbError as e:
-        #info("检测到API兼容性问题，降级到更基本的adb push命令")
-        # 降级到更基本的adb push命令
+    except (AdbError, OSError) as error:
         subprocess.run(
-            ["adb", "push", local_path, remote_path],
+            ["adb", "-s", serial, "push", local_path, remote_path],
             check=True
         )
     if is_debug:
         info(f"push {local_path} to {remote_path} successful")
+    return True
     
 def is_root():
     output = run_su_command("ls /data/")
@@ -407,11 +1179,19 @@ if not is_frida_working_via_attach():
         sys.exit(2)
     frida_server_file = choose_frida_server()
     remote_frida_server_file = f"/data/mobile-deploy/{frida_server_file}"
+    staged_frida_server_file = f"/data/local/tmp/{frida_server_file}"
     if not check_remote_dir_exists("/data/mobile-deploy/"):
         run_su_command("mkdir /data/mobile-deploy/")
     if not check_remote_file_exists(remote_frida_server_file):
-        push_file_to_remote(f"mobile-deploy/{frida_server_file}", "/sdcard/")
-        run_su_command(f"mv /sdcard/{frida_server_file} {remote_frida_server_file}")
+        push_file_to_remote(f"mobile-deploy/{frida_server_file}", staged_frida_server_file)
+        if not check_remote_file_exists(staged_frida_server_file):
+            warn(f"❌ frida-server 推送失败: {staged_frida_server_file}")
+            sys.exit(2)
+        run_su_command(f"su -c 'cp {staged_frida_server_file} {remote_frida_server_file}'")
+        if not check_remote_file_exists(remote_frida_server_file):
+            warn(f"❌ frida-server 复制失败: {remote_frida_server_file}")
+            sys.exit(2)
+        run_su_command(f"rm -f {staged_frida_server_file}")
         run_su_command(f"chmod +x {remote_frida_server_file}")
     run_su_command("setenforce 0")
     run_su_command(f"/data/mobile-deploy/{choose_frida_server()} -D > /sdcard/f_server.log 2>&1", False)
@@ -438,9 +1218,8 @@ current_local_apk_path = None
 current_identifier_cache_db = None
 current_identifier_cache_readonly_db = None
 current_identifier_stop_event = None
+current_working_dir = None
 webserver_url = None
-
-frida_device = None
 
 resource_rpc_jscode = read_js_resource("rpc.js")
 resource_hook_js_prepare_jscode = read_js_resource("_hook_js_prepare.js")
@@ -474,7 +1253,8 @@ def convert_jar_to_dex(jarfile: str) -> bool:
             "error: Not found ANDROID_HOME. Please install android sdk and define ANDROID_HOME environment variable in your system")
         return None
     # 检查输入文件
-    if not os.path.isfile(f"{current_identifier}/{jarfile}"):
+    working_dir = current_working_dir
+    if not os.path.isfile(os.path.join(working_dir, jarfile)):
         warn(f"error: JAR file not found: {jarfile}")
         return None
     # 生成输出文件名（将 .jar 替换为 .dex）
@@ -482,14 +1262,14 @@ def convert_jar_to_dex(jarfile: str) -> bool:
         dexfile = jarfile[:-4] + '.dex'
     else:
         dexfile = jarfile + '.dex'
-    out_put_dex_file = f'{current_identifier}/{dexfile}'
+    out_put_dex_file = os.path.join(working_dir, dexfile)
     try:
         if dx_file:
             # 使用 dx 命令
-            cmd = [dx_file, '--dex', f'--output={out_put_dex_file}', f'{current_identifier}/{jarfile}']
+            cmd = [dx_file, '--dex', f'--output={out_put_dex_file}', os.path.join(working_dir, jarfile)]
         else:
             # 使用 d8 命令
-            cmd = [d8_file, '--output', current_identifier, f'{current_identifier}/{jarfile}']
+            cmd = [d8_file, '--output', working_dir, os.path.join(working_dir, jarfile)]
         info(f"Converting {jarfile} to {dexfile}...")
         # 执行转换
         result = subprocess.run(
@@ -519,23 +1299,12 @@ def convert_jar_to_dex(jarfile: str) -> bool:
 
 def _init_frida_device():
     global frida_device
-    def getRemoteDriver():
-        text = io.open(".hooker_driver",'r',encoding= 'utf8').read()
-        if not text:
-            return None
-        searchResult = re.search(r'\d+\.\d+\.\d+\.\d+:\d+', text)
-        if searchResult:
-            return searchResult.group()
-        return None
     if frida_device:
         return
-    remoteDriver = getRemoteDriver() #ip:port
-    if remoteDriver:
-        frida_device = frida.get_device_manager().add_remote_device(remoteDriver)
-    else:
-        frida_device = frida.get_usb_device(1000)
+    _get_frida_device()
 
-_init_frida_device()
+if not CONFIG_MODE:
+    _init_frida_device()
 
 @dataclass
 class AppInfo:
@@ -639,8 +1408,8 @@ def start_app(package_name):
         out = adb_device.shell(f"pidof {package_name}").strip()
         if out and out.isdigit():
             current_identifier_pid = int(out)
-            return current_identifier_pid, current_identifier_name
-    return None, None
+            return current_identifier_pid, package_name
+    return None, package_name
 
 def restart_app(package_name):
     global current_identifier_pid
@@ -704,6 +1473,7 @@ def ensure_app_in_foreground(package_name):
         info(f"🚀 App {package_name} is not running, starting it now...")
         #adb_device.shell(f"monkey -p {package_name} -c android.intent.category.LAUNCHER 1")
         app_pid, app_name = start_app(package_name)
+        app_name = app_name or package_name
         main_pid = get_main_pid(package_name)
         app_pid = main_pid if main_pid is not None else app_pid
         return app_pid, app_name, version_name, appinstall_path, appinstall_path_apkfilename, uid
@@ -711,7 +1481,10 @@ def ensure_app_in_foreground(package_name):
 def get_remote_file_md5(file_path):
     # 检查文件是否存在并获取长度
     check_cmd = f"md5sum {file_path}"
-    result = run_su_command(check_cmd).strip()
+    result = run_su_command(check_cmd)
+    if not result:
+        return ""
+    result = result.strip()
     if "No such file" in result or "Permission denied" in result or not result:
         #warn("No such file")
         return ""
@@ -743,27 +1516,36 @@ def read_local_file(filename):
     return io.open(filename,'r',encoding= 'utf8').read()
     
 def check_dependency_files():
-    def process_dex_dependency_files():
-        compara_and_update_file("mobile-deploy/radar.dex", "/data/local/tmp/radar.dex")
-    t = threading.Thread(target=process_dex_dependency_files)
-    t.daemon = True
-    t.start()
+    return compara_and_update_file("mobile-deploy/radar.dex", "/data/local/tmp/radar.dex")
              
 def compara_and_update_file(local_file, remote_file):
     local_md5 = get_local_file_md5(local_file)
-    local_filename = local_file.split("/")[-1]
-    sdcard_remote_md5 = get_remote_file_md5(f"/sdcard/{local_filename}")
-    #先把radar.dex拷贝到sdcard，后期更新radar.dex直接从sdcard拷过去
-    if local_md5 != sdcard_remote_md5:
-        push_file_to_remote(local_file, "/sdcard/", False)
+    if not local_md5:
+        warn(f"本地依赖文件不存在或无法读取: {local_file}")
+        return False
+
+    remote_filename = remote_file.rsplit("/", 1)[-1]
+    staged_file = f"/data/local/tmp/.{remote_filename}.upload"
     remote_md5 = get_remote_file_md5(remote_file)
     if local_md5 != remote_md5:
-        run_su_command(f"cp '/sdcard/{local_filename}' '{remote_file}'")
-        run_su_command(f"chmod 555 '{remote_file}'")
+        try:
+            push_file_to_remote(local_file, staged_file, False)
+        except Exception as error:
+            warn(f"依赖文件推送失败: {staged_file}: {error}")
+            return False
+
+        staged_md5 = get_remote_file_md5(staged_file)
+        if staged_md5 != local_md5:
+            warn(f"依赖文件临时副本校验失败: {staged_file}")
+            return False
+
+        run_su_command(f"su -c 'cp {staged_file} {remote_file}'")
+        run_su_command(f"su -c 'chmod 555 {remote_file}'")
         remote_md5 = get_remote_file_md5(remote_file)
         if local_md5 != remote_md5:
             warn(f"push file failed: {remote_file}")
             return False
+        run_su_command(f"rm -f {staged_file}")
     return True
 
 
@@ -884,25 +1666,27 @@ def create_working_dir_enverment():
     global frida_device
     global current_identifier_name
     global current_identifier_version
+    global current_working_dir
     packageName = current_identifier
-    if not os.path.exists(packageName):
-        os.makedirs(packageName)
-        info(f"Creating working directory: {packageName}")
+    current_working_dir = os.path.join(packageName, str(current_identifier_version))
+    if not os.path.exists(current_working_dir):
+        os.makedirs(current_working_dir)
+        info(f"Creating working directory: {current_working_dir}")
         info(f"Generating frida shortcut command...")
-        os.makedirs(packageName+"/xinit")
-        shellPrefix = "#!/bin/bash\nHOOKER_DRIVER=$(cat ../.hooker_driver)\n"
+        os.makedirs(os.path.join(current_working_dir, "xinit"))
+        shellPrefix = "#!/bin/bash\nHOOKER_DRIVER=$(cat ../../.hooker_driver)\n"
         logHooking = shellPrefix + "echo \"hooking $1\" > log\ndate | tee -ai log\n" + "frida $HOOKER_DRIVER -l $1 -N " + packageName + " | tee -ai log"
         attach_shell = shellPrefix + "frida $HOOKER_DRIVER -l $1 -N " + packageName
         spawn_shell = f"{shellPrefix}\nfrida $HOOKER_DRIVER --runtime=v8 -f {packageName} -l $1"
-        create_workingdir_file(packageName+"/hooking", logHooking)
-        create_workingdir_file(packageName+"/attach", attach_shell)
-        create_workingdir_file(packageName+"/spawn", spawn_shell)
-        create_workingdir_file(packageName + "/kill", shellPrefix + "frida-kill $HOOKER_DRIVER "+packageName)
-        create_workingdir_file(packageName+"/objection", shellPrefix + "objection -d -g "+packageName+" explore")
-        os.popen('chmod 777 ' + packageName +'/hooking').readlines()
-        os.popen('chmod 777 ' + packageName +'/attach').readlines()
-        os.popen('chmod 777 ' + packageName +'/objection').readlines()
-        os.popen('chmod 777 ' + packageName +'/spawn').readlines()
+        create_workingdir_file(os.path.join(current_working_dir, "hooking"), logHooking)
+        create_workingdir_file(os.path.join(current_working_dir, "attach"), attach_shell)
+        create_workingdir_file(os.path.join(current_working_dir, "spawn"), spawn_shell)
+        create_workingdir_file(os.path.join(current_working_dir, "kill"), shellPrefix + "frida-kill $HOOKER_DRIVER " + packageName)
+        create_workingdir_file(os.path.join(current_working_dir, "objection"), shellPrefix + "objection -d -g " + packageName + " explore")
+        os.popen('chmod 777 ' + os.path.join(current_working_dir, 'hooking')).readlines()
+        os.popen('chmod 777 ' + os.path.join(current_working_dir, 'attach')).readlines()
+        os.popen('chmod 777 ' + os.path.join(current_working_dir, 'objection')).readlines()
+        os.popen('chmod 777 ' + os.path.join(current_working_dir, 'spawn')).readlines()
         info(f"Generating built-in frida script...")
         init_js_files = [
             "url.js",
@@ -939,16 +1723,18 @@ def create_working_dir_enverment():
                 info(f"File not Found: js/{js_file}")
                 continue
             jscode = read_js_resource(js_file)
-            create_workingdir_file(f"{packageName}/{js_file}", jscode.replace("com.smile.gifmaker", packageName))
+            create_workingdir_file(os.path.join(current_working_dir, js_file), jscode.replace("com.smile.gifmaker", packageName))
         info(f"Copying APK {current_identifier_install_path}/{current_identifier_install_apkfilename} to working directory please waiting for a few seconds")
         global current_local_apk_path
-        current_local_apk_path = f"{packageName}/{current_identifier_name.replace(' ', '')}_{current_identifier_version}.apk"
+        current_local_apk_path = os.path.join(current_working_dir, f"{current_identifier_name.replace(' ', '')}_{current_identifier_version}.apk")
         pull_file_to_local(f"{current_identifier_install_path}/{current_identifier_install_apkfilename}", current_local_apk_path)
         info(f"Working directory create successful")
         
 def init_working_dir_enverment():
     global current_local_apk_path
-    current_local_apk_path = f"{current_identifier}/{current_identifier_name.replace(' ', '')}_{current_identifier_version}.apk"
+    global current_working_dir
+    current_working_dir = os.path.join(current_identifier, str(current_identifier_version))
+    current_local_apk_path = os.path.join(current_working_dir, f"{current_identifier_name.replace(' ', '')}_{current_identifier_version}.apk")
     if os.path.isfile(current_local_apk_path):
         return
     if os.path.isdir(current_local_apk_path):
@@ -986,10 +1772,10 @@ def hook_js(hookCmdArg, savePath = None):
         ganaretoionJscode += jscode
         if savePath == None:
             defaultFilename = className.replace(":", ".").replace("$", ".").replace("__", ".")+ "." + file_method_name + ".js"
-            savePath = packageName+"/"+defaultFilename;
+            savePath = os.path.join(current_working_dir, defaultFilename)
         else:
             defaultFilename = savePath
-            savePath = packageName+"/"+savePath;
+            savePath = os.path.join(current_working_dir, savePath)
         if len(ganaretoionJscode):
             ganaretoionJscode = resource_hook_js_prepare_jscode + "\n" + ganaretoionJscode + "\n\n\n\n\n//---------------------may be you need--------------------\n\n" + resource_hook_js_enhance_jscode
             warpExtraInfo = f"//cracked by {current_identifier_name} {appversion}\n"
@@ -1082,15 +1868,16 @@ def rpc_start_web_server(dex_file, all_class):
 def list_working_dir():
     js_files = {
         filename: None
-        for filename in os.listdir(current_identifier)
+        for filename in os.listdir(current_working_dir)
         if filename.endswith(".js")
     }
     print_js_file(list(js_files.keys()))
                 
                 
 def execute_script(script_file, is_spawn=False):
-    if not os.path.isfile(f"{current_identifier}/{script_file}"):
-        warn(f"{current_identifier}/{script_file} File Not found")
+    script_path = os.path.join(current_working_dir, script_file)
+    if not os.path.isfile(script_path):
+        warn(f"{script_path} File Not found")
         return
     online_session = None
     online_script = None
@@ -1102,7 +1889,7 @@ def execute_script(script_file, is_spawn=False):
     use_v8 = "just_trust_me.js" in script_file
     try:
         log_filename = script_file.rsplit('.', 1)[0] + '.log'
-        log_filepath = f"{current_identifier}/{log_filename}"
+        log_filepath = os.path.join(current_working_dir, log_filename)
         log_fh = open(log_filepath, 'w', encoding='utf-8')
         # fd 级别重定向，捕获所有 C 层写 stdout 的输出
         pipe_r, pipe_w = os.pipe()
@@ -1125,9 +1912,9 @@ def execute_script(script_file, is_spawn=False):
         tee_thread = threading.Thread(target=tee_reader, daemon=True)
         tee_thread.start()
         if is_spawn:
-            online_session, online_script = spawn(f"{current_identifier}/{script_file}", use_v8)
+            online_session, online_script = spawn(script_path, use_v8)
         else:
-            online_session, online_script = attach(f"{current_identifier}/{script_file}", use_v8)
+            online_session, online_script = attach(script_path, use_v8)
         info(f"Frida output logging -> {log_filepath}")
         while online_session != None:
             try:
@@ -1399,7 +2186,7 @@ def r0capture():
                 info(f"flushing {current_identifier}/r0capture_ssl.pcap successful")
             info("r0capture.js detach successful")
             restart_app(current_identifier)
-    ssl_log(f"{current_identifier}/r0capture_ssl.pcap", True)
+    ssl_log(os.path.join(current_working_dir, "r0capture_ssl.pcap"), True)
     
 def un_proxy():
     run_su_command(r"for i in $(iptables -t nat -L OUTPUT --line-numbers | grep REDIRECT |grep 12345 | awk \"{print \$1}\" | sort -rn); do iptables -t nat -D OUTPUT $i; done")
@@ -1655,11 +2442,12 @@ def query_class_name_by_prefix(class_name_prefix, class_name, limit=15):
     class_name_prefix, class_name = class_name_prefix.rsplit(".", 1)
     return query_class_name_by_prefix(class_name_prefix, class_name, limit)
 
-def get_need_to_cache_pkg_prefix():
+def get_need_to_cache_pkg_prefix(apk_path=None):
     results = {"okhttp3", "retrofit2", "javax.crypto", "java.security"}
     try:
+        apk_path = apk_path or current_local_apk_path
         logging.getLogger("androguard.core.api_specific_resources").setLevel(logging.ERROR)
-        a = apk.APK(current_local_apk_path)
+        a = apk.APK(apk_path)
         activities = a.get_activities()
         # 取每个activity包名前两段
         prefixes = []
@@ -1685,13 +2473,14 @@ def get_need_to_cache_pkg_prefix():
     return list(results)
 
 def load_dexes_to_cache():
-    if not zipfile.is_zipfile(current_local_apk_path):
-        warn(f"{current_local_apk_path} is not a legal zip file")
+    apk_path = current_local_apk_path
+    if not zipfile.is_zipfile(apk_path):
+        warn(f"{apk_path} is not a legal zip file")
         return
     open_or_create_db()
     def process_dex():
-        need_to_cache_pkg_prefix = get_need_to_cache_pkg_prefix()
-        with zipfile.ZipFile(current_local_apk_path, 'r') as zip_ref:
+        need_to_cache_pkg_prefix = get_need_to_cache_pkg_prefix(apk_path)
+        with zipfile.ZipFile(apk_path, 'r') as zip_ref:
             for file_info in zip_ref.infolist():
                 if file_info.filename.endswith('.dex'):
                     with zip_ref.open(file_info.filename) as dex_file:
@@ -1825,7 +2614,7 @@ def push_file_to_device_with_chmod(local_file, remote_file = None):
     filename = local_file.split("/")[-1]
     if remote_file == None:
         remote_file = f"/data/user/0/{current_identifier}/{filename}"
-    if not compara_and_update_file(f"{current_identifier}/{local_file}", remote_file):
+    if not compara_and_update_file(os.path.join(current_working_dir, local_file), remote_file):
         raise RuntimeError(f"failed to push file to device: {remote_file}")
     user_group_id = f"u0_a{(int(current_identifier_uid) - 10000)}"
     run_su_command(f"chown {user_group_id}:{user_group_id} {remote_file}")
@@ -1838,7 +2627,7 @@ def start_web_server(jar_file:str = "", with_xposed_daemon = False):
     all_classes = []
     if jar_file:
         dex_file = convert_jar_to_dex(jar_file)
-        with open(f"{current_identifier}/{dex_file}", "rb") as f:
+        with open(os.path.join(current_working_dir, dex_file), "rb") as f:
             dex = dvm.DalvikVMFormat(f.read())
         all_classes = []
         for cls in dex.get_classes():
@@ -1870,7 +2659,11 @@ def tail_android_file(filepath: str):
         info("There is no log yet")
         return
     info(f"viewloging")
-    cmd = ["adb", "shell", "tail", "-f", filepath]
+    serial = _device_serial(adb_device)
+    if not serial:
+        warn("当前 Android 设备没有有效 serial")
+        return
+    cmd = ["adb", "-s", serial, "shell", "tail", "-f", filepath]
     # 启动 adb 进程
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
@@ -1898,17 +2691,17 @@ class ClassNameCompleter(Completer):
     def __init__(self):
         js_files = {
             filename: None
-            for filename in os.listdir(current_identifier)
+            for filename in os.listdir(current_working_dir)
             if filename.endswith(".js")
         }
         pushable_files = {
             filename: None
-            for filename in os.listdir(current_identifier)
+            for filename in os.listdir(current_working_dir)
             if filename.endswith(".dex") or filename.endswith(".so") or filename.endswith(".jpg")
         }
         jar_files = {
             filename: None
-            for filename in os.listdir(current_identifier)
+            for filename in os.listdir(current_working_dir)
             if filename.endswith(".jar")
         }
         viewlog = {
@@ -1962,17 +2755,17 @@ class ClassNameCompleter(Completer):
     def update_js_files(self):
         js_files = {
             filename: None
-            for filename in os.listdir(current_identifier)
+            for filename in os.listdir(current_working_dir)
             if filename.endswith(".js")
         }
         pushable_files = {
             filename: None
-            for filename in os.listdir(current_identifier)
+            for filename in os.listdir(current_working_dir)
             if filename.endswith(".dex") or filename.endswith(".so") or filename.endswith(".jpg")
         }
         jar_files = {
             filename: None
-            for filename in os.listdir(current_identifier)
+            for filename in os.listdir(current_working_dir)
             if filename.endswith(".jar")
         }
         self.nested_dict["attach"] = js_files
@@ -2042,7 +2835,7 @@ class ClassNameCompleter(Completer):
             for c in self.debug_completer.get_completions(document, complete_event):
                 yield c
                         
-cmd_session = PromptSession()
+active_agent_config = initialize_agent_config()
 classNameCompleter = None
     
 def entry_debug_mode():    
@@ -2145,7 +2938,7 @@ def entry_debug_mode():
             if m:
                 path = m.group(1)
                 filename = path.split('/')[-1]
-                pull_file_to_local(path, f"{current_identifier}/{filename}", True)
+                pull_file_to_local(path, os.path.join(current_working_dir, filename), True)
                 return True
         elif (cmd.startswith("generatescript ") or cmd.startswith("gs ")) and re.search(r"(generatescript|gs)\s+([^\s]+)", cmd):
             m = re.search(r"(generatescript|gs)\s+([^\s]+)", cmd)
@@ -2202,7 +2995,7 @@ def entry_debug_mode():
     classNameCompleter = ClassNameCompleter()
     while True:
         try:
-            hooker_cmd = cmd_session.prompt(f'{current_identifier_name} > ', completer=classNameCompleter)
+            hooker_cmd = prompt_with_border(f'{current_identifier_name} > ', completer=classNameCompleter)
             hooker_cmd = hooker_cmd.strip()
             if hooker_cmd == 'exit' or hooker_cmd == 'quit':
                 break
@@ -2211,7 +3004,8 @@ def entry_debug_mode():
                 continue
             is_handled = handle_command(hooker_cmd)
             if not is_handled and hooker_cmd:
-                info(f"hooker command not found: {hooker_cmd} Please enter \"help\" + Enter to view the help information")
+                if not invoke_local_agent(hooker_cmd):
+                    info(f"hooker command not found: {hooker_cmd} Please enter \"help\" + Enter to view the help information")
                 continue
             elif not hooker_cmd:
                 continue
@@ -2313,13 +3107,14 @@ while True:
             continue
         current_identifier = identifier
         current_identifier_pid, current_identifier_name, current_identifier_version, current_identifier_install_path, current_identifier_install_apkfilename, current_identifier_uid  = ensure_app_in_foreground(current_identifier)
-        if not os.path.isdir(identifier):
+        current_working_dir = os.path.join(current_identifier, str(current_identifier_version))
+        if not os.path.isdir(current_working_dir):
             create_working_dir_enverment()
         else:
             init_working_dir_enverment()
         load_dexes_to_cache()
         check_dependency_files()
-        info(f"current working directory: hooker/{current_identifier}")
+        info(f"current working directory: hooker/{current_working_dir}")
         entry_debug_mode()
         # 从debug模式跳出来
         current_identifier = None
@@ -2328,6 +3123,7 @@ while True:
         current_identifier_pid = None
         current_identifier_install_path = None
         current_identifier_uid = None
+        current_working_dir = None
         current_local_apk_path = None
         current_identifier_cache_db = None
         current_identifier_cache_readonly_db = None
