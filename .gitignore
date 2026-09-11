@@ -19,6 +19,7 @@ dex2jar-output/
 # Hooker runtime state and per-app reverse-engineering workspaces
 /.cache/
 /com.*/
+/.claude/settings.local.json
 .idea/
 .classpath
 .project
